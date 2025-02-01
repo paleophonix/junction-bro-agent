@@ -1,59 +1,50 @@
 from fastapi import FastAPI, HTTPException
-from langchain_community.chat_models import ChatOpenAI
-from langchain.agents import initialize_agent, Tool
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
 from pydantic import BaseModel
+from langchain_community.chat_models import ChatOpenAI
+from langchain.prompts import PromptTemplate
 from config import settings
+from openai import OpenAI
 
-# Инициализация OpenAI с использованием ключа из config
-llm = ChatOpenAI(temperature=0.7, openai_api_key=settings.OPENAI_API_KEY)
+app = FastAPI()
 
-# Инициализация FastAPI приложения
-app = FastAPI(title="LLM Agent API")
-
-# Создаем базовую модель для запроса
 class Query(BaseModel):
     text: str
-    
-# Создаем промпт для общения
+
+# Создаем базовый клиент OpenAI
+client = OpenAI(
+    api_key=settings.BOTHUB_API_KEY,
+    base_url=settings.BOTHUB_API_BASE
+)
+
+# Используем его в LangChain
+llm = ChatOpenAI(
+    model_name=settings.MODEL_NAME,
+    temperature=settings.TEMPERATURE,
+    client=client  # передаем готовый клиент
+)
+
+# Создание промпта
 prompt = PromptTemplate(
-    input_variables=["query"],
-    template="""Ты - полезный ассистент. 
-    Пожалуйста, ответь на следующий вопрос максимально информативно: {query}"""
+    input_variables=["text"],
+    template="{text}"
 )
 
-# Создаем цепочку для обработки запросов
-chain = LLMChain(llm=llm, prompt=prompt)
-
-# Определяем инструменты для агента
-tools = [
-    Tool(
-        name="Language Model",
-        func=chain.run,
-        description="Полезно для ответов на общие вопросы и анализа"
-    )
-]
-
-# Инициализируем агента
-agent = initialize_agent(
-    tools,
-    llm,
-    agent="zero-shot-react-description",
-    verbose=True
-)
-
+# Создание цепочки
+chain = prompt | llm
 
 @app.post("/ask")
-async def ask_agent(query: Query):
+async def ask_endpoint(query: Query):
     """
-    Эндпоинт для отправки запросов к LLM-агенту
+    Эндпоинт для отправки запросов к BotHub через Langchain
     """
     try:
-        response = agent.run(query.text)
-        return {"response": response, "status": "success"}
+        response = await chain.ainvoke({"text": query.text})
+        return {
+            "response": response,
+            "status": "success"
+        }
     except Exception as e:
-        return {"error": str(e), "status": "error"}
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 async def root():
