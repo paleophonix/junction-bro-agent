@@ -30,19 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('regex_wizard')
 
-class RegexRequest(BaseModel):
-    instruction: str
-    text_before: str
-    text_after: str
-
-class RegexResponse(BaseModel):
-    """Модель ответа с регуляркой"""
-    pattern: str
-    replacement: str
-    test_result: str
-    self_evaluation: str
-    score: int
-
+# Существующие шаблоны - оставляем
 regex_template = """Ты - эксперт по регулярным выражениям в Java 8. Создай точный regex-шаблон для поиска и замены текста, используя ТОЛЬКО синтаксис Java 8 regex.
 
 Важные правила Java 8 regex:
@@ -105,6 +93,14 @@ Evaluation: (краткое описание того, что произошло
 # Добавляем новый шаблон для анализа и планирования
 analysis_template = """Проанализируй неудачную попытку создания regex-шаблона в Java-нотации и предложи план исправления. Будь краток, не предлагай программирование.
 
+
+Пожалуйста, предоставь:
+1. Анализ причин несоответствия
+2. Конкретный план по улучшению шаблона
+
+Формат ответа:
+Analysis: (анализ проблемы)
+Plan: (план исправления)
 Исходные данные:
 Инструкция: {instruction}
 Ожидаемый результат: {text_after}
@@ -114,13 +110,22 @@ Pattern: {pattern}
 Replacement: {replacement}
 Результат: {actual_result}
 
-Пожалуйста, предоставь:
-1. Анализ причин несоответствия
-2. Конкретный план по улучшению шаблона
+История предыдущих попыток:
+{history}
+"""
 
-Формат ответа:
-Analysis: (анализ проблемы)
-Plan: (план исправления)"""
+class RegexRequest(BaseModel):
+    instruction: str
+    text_before: str
+    text_after: str
+
+class RegexResponse(BaseModel):
+    """Модель ответа с регуляркой"""
+    pattern: str
+    replacement: str
+    test_result: str
+    self_evaluation: str
+    score: int
 
 class RegexMemory(ConversationBufferWindowMemory):
     """Память для хранения истории регулярок"""
@@ -210,12 +215,10 @@ class RegexAgent:
         # Создаем цепочку для анализа
         self.analysis_chain = self.analysis_prompt | self.llm
     
-    async def _get_completion(self, prompt: str) -> str:
+    def _get_completion(self, prompt: str) -> str:
         """Получение ответа от модели"""
         try:
-            response = await self.llm.ainvoke(prompt)
-            if isinstance(response, dict) and "content" in response:
-                response = response["content"]
+            response = self.llm.invoke(prompt)
             return response
         except Exception as e:
             logger.error(f"Error getting completion: {str(e)}", exc_info=True)
@@ -423,35 +426,6 @@ Evaluation: {evaluation_response}
         except Exception as e:
             self.logger.error(f"Error evaluating result: {str(e)}")
             raise
-
-    def _create_prompt(self, instruction: str, text_before: str, text_after: str, analysis: str = "") -> str:
-        """Создание промпта для модели"""
-        template = """Instruction: {instruction}
-
-Text before:
-{text_before}
-
-Expected result:
-{text_after}
-
-Analysis:
-{analysis}
-
-Create a regex pattern and replacement to transform the text from 'before' to match 'after'.
-Use only regex pattern and replacement string, no programming code.
-Response format:
-Pattern: <your pattern>
-Replacement: <your replacement>"""
-
-        return PromptTemplate(
-            template=template,
-            input_variables=["instruction", "text_before", "text_after", "analysis"]
-        ).format(
-            instruction=instruction,
-            text_before=text_before,
-            text_after=text_after,
-            analysis=analysis
-        )
 
     def _parse_score(self, evaluation: str) -> int:
         """Извлекает числовую оценку из текста оценки"""

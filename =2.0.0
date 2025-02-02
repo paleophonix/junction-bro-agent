@@ -1,4 +1,0 @@
-Requirement already satisfied: fastapi in e:\@dev\@junction-bro-agent\venv\lib\site-packages (0.68.1)
-Requirement already satisfied: pydantic in e:\@dev\@junction-bro-agent\venv\lib\site-packages (1.8.2)
-Requirement already satisfied: starlette==0.14.2 in e:\@dev\@junction-bro-agent\venv\lib\site-packages (from fastapi) (0.14.2)
-Requirement already satisfied: typing-extensions>=3.7.4.3 in e:\@dev\@junction-bro-agent\venv\lib\site-packages (from pydantic) (4.12.2)
