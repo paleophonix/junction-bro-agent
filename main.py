@@ -9,6 +9,9 @@ import httpx
 from httpx_socks import AsyncProxyTransport
 from dotenv import load_dotenv
 from regex_wizard import regex_agent, RegexRequest
+import re
+from fastapi.responses import JSONResponse, Response
+import json
 
 load_dotenv()
 
@@ -21,6 +24,15 @@ app = FastAPI()
 
 class Query(BaseModel):
     text: str
+
+class RegexResponse(BaseModel):
+    pattern: str
+    replacement: str
+    
+    class Config:
+        json_encoders = {
+            str: lambda v: v  # Отключаем экранирование для строк
+        }
 
 # Выбор LLM провайдера
 if settings.LLM_PROVIDER == "openai":
@@ -88,12 +100,18 @@ async def root():
 
 @app.post("/regex/replace")
 async def regex_endpoint(request: RegexRequest):
-    """
-    Эндпоинт для создания regex-шаблонов и замены текста
-    """
+    """Эндпоинт для создания regex-шаблонов"""
     try:
-        result = await regex_agent.process_request(request)
-        return result
+        full_result = await regex_agent.process_request(request)
+        
+        # Убираем двойные слеши
+        pattern = full_result["pattern"].replace('\\\\', '\\')
+        
+        # Просто возвращаем объект
+        return RegexResponse(
+            pattern=pattern,
+            replacement=full_result["replacement"]
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

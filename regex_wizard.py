@@ -183,7 +183,7 @@ class RegexAgent:
         )
         
         self.analysis_prompt = PromptTemplate(
-            input_variables=["instruction", "text_after", "pattern", "replacement", "actual_result"],
+            input_variables=["instruction", "text_after", "pattern", "replacement", "actual_result", "history"],
             template=analysis_template
         )
         
@@ -224,89 +224,56 @@ class RegexAgent:
             logger.error(f"Error getting completion: {str(e)}", exc_info=True)
             raise
 
-    async def process_request(self, request: RegexRequest) -> dict:
-        MAX_ATTEMPTS = 100
+    def _clean_result(self, result: dict) -> dict:
+        """Очищает результат от лишних слешей и метаданных"""
+        if 'pattern' in result:
+            result['pattern'] = result['pattern'].replace('\\\\', '\\')
+            
+        if 'self_evaluation' in result:
+            eval_match = re.search(r"content='(.*?)'", result['self_evaluation'])
+            if eval_match:
+                result['self_evaluation'] = eval_match.group(1).replace('\\n', '\n')
+                
+        return result
+    
+    async def _process_regex_request(self, request: RegexRequest) -> dict:
+        """Внутренний метод обработки запроса"""
+        pattern, replacement = await self._get_pattern_and_replacement(request)
+        if not pattern or not replacement:
+            return {"error": "Failed to generate pattern"}
+            
+        test_result = await self._test_pattern(pattern, replacement, request.text_before)
+        analysis = await self._analyze_result(request, pattern, replacement, test_result)
+        score = self._extract_score(analysis)
         
+        return {
+            "pattern": pattern,
+            "replacement": replacement
+        }
+    
+    async def process_request(self, request: RegexRequest) -> dict:
+        """Публичный метод обработки запроса"""
         try:
-            attempt = 0
-            best_score = 0
-            best_response = None
+            # Получаем шаблоны от модели
+            pattern, replacement = await self._get_pattern_and_replacement(request)
+            if not pattern or not replacement:
+                return {"error": "Failed to generate pattern"}
             
-            while attempt < MAX_ATTEMPTS:
-                attempt += 1
-                
-                # Получаем паттерн и замену
-                memory = self.memory.get_relevant_history(request)
-                pattern, replacement = await self._get_pattern_and_replacement(request, memory)
-                
-                # Применяем regex и проверяем результат
-                test_result = await self._apply_regex(pattern, replacement, request.text_before)
-                
-                # Оцениваем результат
-                evaluation_response = await self._evaluate_result(request, pattern, replacement, test_result)
-                score = self._parse_score(evaluation_response)
-                
-                # Нормализуем результаты для сравнения
-                normalized_test = self._normalize_text(test_result)
-                normalized_expected = self._normalize_text(request.text_after)
-                
-                # Логируем попытку
-                self.session_logger.info(f"\nAttempt {attempt} - Assistant output:")
-                self.session_logger.info(f"Pattern: {pattern!r}")
-                self.session_logger.info(f"Replacement: {replacement!r}")
-                self.session_logger.info(f"Result:\n{test_result}")
-                
-                # Сохраняем попытку в память
-                attempt_info = f"""Attempt {attempt}:
-Pattern: {pattern}
-Replacement: {replacement}
-Score: {score}
-Evaluation: {evaluation_response}
-"""
-                self.memory.save_context(
-                    {"input": request.text_before},
-                    {"output": attempt_info}
-                )
-                
-                # Если нашли точное совпадение - возвращаем его
-                if normalized_test == normalized_expected:
-                    self.session_logger.info(f"\nFound exact match on attempt {attempt}")
-                    response = {
-                        "pattern": pattern,
-                        "replacement": replacement,
-                        "test_result": test_result,
-                        "self_evaluation": evaluation_response,
-                        "score": score
-                    }
-                    return response
-                
-                # Сохраняем лучший результат
-                if score > best_score:
-                    best_score = score
-                    best_response = {
-                        "pattern": pattern,
-                        "replacement": replacement,
-                        "test_result": test_result,
-                        "self_evaluation": evaluation_response,
-                        "score": score
-                    }
-                
-                # Если не нашли точное совпадение, пробуем проанализировать и улучшить
-                if attempt < MAX_ATTEMPTS:
-                    analysis = await self._analyze_result(request, pattern, replacement, test_result)
-                    if analysis:
-                        self.session_logger.info(f"\nAnalysis:\n{analysis}")
-                
-                if attempt >= MAX_ATTEMPTS:
-                    self.session_logger.info(f"\nMax attempts ({MAX_ATTEMPTS}) reached")
-                    return best_response or {
-                        "pattern": pattern,
-                        "replacement": replacement,
-                        "test_result": test_result,
-                        "self_evaluation": "Failed to find exact match",
-                        "score": 1
-                    }
+            # Тестируем шаблон
+            test_result = await self._test_pattern(pattern, replacement, request.text_before)
             
+            # Получаем оценку как есть, без обработки
+            analysis = await self._analyze_result(request, pattern, replacement, test_result)
+            
+            result = {
+                "pattern": pattern.replace('\\\\', '\\'),  # Убираем двойные слеши
+                "replacement": replacement,
+                "test_result": test_result,
+                "self_evaluation": analysis,
+                "score": 10  # Фиксированная оценка, модель сама разберется
+            }
+            
+            return result
         except Exception as e:
             self.logger.error(f"Error processing request: {str(e)}")
             raise
@@ -367,7 +334,7 @@ Evaluation: {evaluation_response}
         text = text.lower()
         return text
 
-    async def _apply_regex(self, pattern: str, replacement: str, text: str) -> str:
+    async def _test_pattern(self, pattern: str, replacement: str, text_before: str) -> str:
         """Применяет регулярное выражение к тексту"""
         try:
             # Очищаем шаблон от кавычек
@@ -378,10 +345,10 @@ Evaluation: {evaluation_response}
             regex = re.compile(pattern, re.MULTILINE | re.DOTALL)
             
             # Получаем все совпадения
-            matches = list(regex.finditer(text))
+            matches = list(regex.finditer(text_before))
             if not matches:
                 self.logger.warning("No matches found!")
-                return text
+                return text_before
             
             # Применяем замену для каждого совпадения
             result = []
@@ -404,7 +371,7 @@ Evaluation: {evaluation_response}
             
         except Exception as e:
             self.logger.error(f"Error applying regex: {str(e)}")
-            return text
+            return text_before
 
     async def _evaluate_result(self, request: RegexRequest, pattern: str, replacement: str, test_result: str) -> str:
         """Оценивает результат применения регулярки"""
@@ -502,11 +469,11 @@ Evaluation: {evaluation_response}
             # Создаем промпт для анализа
             prompt = self.analysis_prompt.format(
                 instruction=request.instruction,
-                text_before=request.text_before,
                 text_after=request.text_after,
                 pattern=pattern,
                 replacement=replacement,
-                actual_result=test_result
+                actual_result=test_result,
+                history=self.memory.get_relevant_history(request)
             )
             
             # Используем ainvoke и возвращаем строку
@@ -517,50 +484,39 @@ Evaluation: {evaluation_response}
             
         except Exception as e:
             self.logger.error(f"Error analyzing result: {str(e)}")
-            raise
+            return ""
 
-    async def _get_pattern_and_replacement(self, request: RegexRequest, memory: str) -> tuple[str, str]:
-        """Получает паттерн и замену из ответа модели"""
+    async def _get_pattern_and_replacement(self, request: RegexRequest) -> tuple[str, str]:
+        """Получает паттерн и замену от модели"""
         try:
-            prompt = self.prompt.format(
+            # Получаем историю из памяти
+            memory = self.memory.get_relevant_history(request)
+            
+            # Получаем ответ от модели
+            response = await self.llm.ainvoke(self.prompt.format(
                 instruction=request.instruction,
                 text_before=request.text_before,
                 text_after=request.text_after,
                 history=memory
-            )
+            ))
             
-            # Получаем ответ от модели
-            response = await self.llm.ainvoke(prompt)
-            
-            # Извлекаем content из ответа
+            # Преобразуем в строку и убираем двойные слеши
             if hasattr(response, 'content'):
                 response = response.content
-            response = str(response)
+            response = str(response).replace('\\\\', '\\')
             
-            # Очищаем от метаданных
-            if "content='" in response:
-                response = response.split("content='")[1].split("' additional_kwargs")[0]
-            
-            self.logger.info(f"Raw model response: {response!r}")
-            
-            # Ищем Pattern: и Replacement: в тексте
-            pattern_match = re.search(r'Pattern:\s*(.*?)(?=\nReplacement:|$)', response)
-            replacement_match = re.search(r'Replacement:\s*(.*?)(?=\n|$)', response)
+            # Извлекаем паттерн и замену
+            pattern_match = re.search(r"Pattern: (.*?)(?:\n|$)", response)
+            replacement_match = re.search(r"Replacement: (.*?)(?:\n|$)", response)
             
             if not pattern_match or not replacement_match:
-                raise ValueError(f"Failed to extract pattern or replacement from response: {response}")
+                return "", ""
             
-            pattern = pattern_match.group(1).strip()
-            replacement = replacement_match.group(1).strip()
-            
-            self.logger.info(f"Extracted pattern: {pattern!r}")
-            self.logger.info(f"Extracted replacement: {replacement!r}")
-            
-            return pattern, replacement
+            return pattern_match.group(1).strip(), replacement_match.group(1).strip()
             
         except Exception as e:
             self.logger.error(f"Error getting pattern and replacement: {str(e)}")
-            raise
+            return "", ""
 
     def __del__(self):
         # Закрываем файл лога при удалении объекта
@@ -576,10 +532,13 @@ router = APIRouter()
 async def process_regex(request: RegexRequest) -> JSONResponse:
     try:
         result = await regex_agent.process_request(request)
-        # Используем ensure_ascii=False чтобы отключить экранирование
-        json_str = json.dumps(result, ensure_ascii=False)
-        # Преобразуем обратно в dict
-        clean_result = json.loads(json_str)
-        return JSONResponse(content=clean_result)
+        
+        # Очищаем self_evaluation от метаданных
+        if 'self_evaluation' in result:
+            eval_match = re.search(r"content='(.*?)'", result['self_evaluation'])
+            if eval_match:
+                result['self_evaluation'] = eval_match.group(1)
+            
+        return JSONResponse(content=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) 
