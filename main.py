@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from config import settings
@@ -12,6 +12,8 @@ from regex_wizard import regex_agent, RegexRequest
 import re
 from fastapi.responses import JSONResponse, Response
 import json
+from typing import Any
+from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
@@ -22,17 +24,20 @@ print(f"Bothub API Key set: {'BOTHUB_API_KEY' in os.environ}")
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Для тестов можно разрешить всем
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 class Query(BaseModel):
     text: str
 
 class RegexResponse(BaseModel):
     pattern: str
     replacement: str
-    
-    class Config:
-        json_encoders = {
-            str: lambda v: v  # Отключаем экранирование для строк
-        }
 
 # Выбор LLM провайдера
 if settings.LLM_PROVIDER == "openai":
@@ -103,13 +108,8 @@ async def regex_endpoint(request: RegexRequest):
     """Эндпоинт для создания regex-шаблонов"""
     try:
         full_result = await regex_agent.process_request(request)
-        
-        # Убираем двойные слеши
-        pattern = full_result["pattern"].replace('\\\\', '\\')
-        
-        # Просто возвращаем объект
         return RegexResponse(
-            pattern=pattern,
+            pattern=full_result["pattern"],
             replacement=full_result["replacement"]
         )
     except Exception as e:

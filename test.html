@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Regex Tester</title>
+</head>
+<body>
+    <pre id="result"></pre>
+
+    <script>
+        fetch('http://localhost:8000/regex/replace', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                "instruction": "Convert XML-like comments to simple format",
+                "text_before": "<comment>\n<author>JohnDoe</author>\n<date>2024-01-15</date>\n<text>Test</text>\n</comment>",
+                "text_after": "[15/01] JohnDoe: Test"
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            // Покажем и сырые данные, и как их видит JS
+            document.getElementById('result').textContent = 
+                'Raw pattern: ' + JSON.stringify(data.pattern) + '\n' +
+                'Parsed pattern: ' + data.pattern;
+        });
+    </script>
+</body>
+</html> 

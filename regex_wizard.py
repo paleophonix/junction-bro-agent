@@ -31,86 +31,83 @@ logging.basicConfig(
 logger = logging.getLogger('regex_wizard')
 
 # Существующие шаблоны - оставляем
-regex_template = """Ты - эксперт по регулярным выражениям в Java 8. Создай точный regex-шаблон для поиска и замены текста, используя ТОЛЬКО синтаксис Java 8 regex.
+regex_template = """You are a regex pattern creation assistant. Create patterns for simple text editor find & replace function that work in Java 8.
 
-Важные правила Java 8 regex:
-- Используй $1, $2 и т.д. для обратных ссылок в replacement (не \1, \2)
-- Для начала строки используй \A вместо ^
-- Для конца строки используй \z вместо $
-- Для экранирования используй \Q...\E
-- Для флагов используй (?i), (?m), (?s)
-- Для позитивного просмотра вперед используй (?=...)
-- Для негативного просмотра вперед используй (?!...)
-- Для позитивного просмотра назад используй (?<=...)
-- Для негативного просмотра назад используй (?<!...)
+RULES:
+1. Pattern must use Java 8 notation:
+   - $1, $2 for group references (not \1, \2)
+   - \A for start of line (not ^)
+   - \z for end of line (not $)
+   - (?i) for case-insensitive
+   - Basic regex: (), [], *, +, ?, \d, \w, \s
 
-ВАЖНО: В шаблоне замены (replacement) используй ТОЛЬКО:
-- $1, $2, и т.д. для обратных ссылок на группы
-- Обычный текст и пробелы
-- Знаки пунктуации
-НЕ ИСПОЛЬЗУЙ никакие Java-функции или методы в шаблоне замены!
+2. Replacement can ONLY use:
+   - Group numbers: $1, $2, $3
+   - Plain text
+   - Spaces and punctuation
 
-Инструкция: {instruction}
+IMPORTANT: Do not use any quotes or backticks in your response!
+No JavaScript, no Python, no conditions, no functions - just simple find & replace.
 
-Пример преобразования:
-До: {text_before}
-После: {text_after}
+Instruction: {instruction}
 
-История предыдущих запросов:
+Example transformation:
+Before: {text_before}
+After: {text_after}
+
+Previous attempts history:
 {history}
 
-ВАЖНО: Ответь ТОЛЬКО двумя строками в точном формате:
-Pattern: <шаблон>
-Replacement: <замена>
-
-Не добавляй никаких пояснений, кавычек или дополнительного текста."""
+Reply ONLY with:
+Pattern: <pattern>
+Replacement: <replacement>"""
 
 # Добавляем новый шаблон для самооценки
-evaluation_template = """Оцени результат применения regex-шаблона в Java-нотации.
+evaluation_template = """Evaluate the regex pattern application in Java notation.
 
-Исходная задача:
-Инструкция: {instruction}
-Текст до замены: {text_before}
-Ожидаемый результат: {text_after}
+Original task:
+Instruction: {instruction}
+Text before: {text_before}
+Expected result: {text_after}
 
-Использованные шаблоны:
+Used patterns:
 Pattern: {pattern}
 Replacement: {replacement}
 
-Фактический результат: {actual_result}
+Actual result: {actual_result}
 
-Пожалуйста, оцени результат по шкале от 1 до 10, где:
-   1-3: Полное несоответствие ожиданиям
-   4-6: Частичное соответствие
-   7-9: Хороший результат с мелкими недочетами
-   10: Полное соответствие
+Please rate the result on a scale from 1 to 10, where:
+   1-3: Complete mismatch
+   4-6: Partial match
+   7-9: Good result with minor issues
+   10: Perfect match
 
-Формат ответа:
-Score: (число от 1 до 10)
-Evaluation: (краткое описание того, что произошло)
+Response format:
+Score: (number from 1 to 10)
+Evaluation: (brief description of what happened)
 """
 
 # Добавляем новый шаблон для анализа и планирования
-analysis_template = """Проанализируй неудачную попытку создания regex-шаблона в Java-нотации и предложи план исправления. Будь краток, не предлагай программирование.
+analysis_template = """Analyze the failed regex pattern attempt in Java notation and suggest an improvement plan. Be concise.
 
+Please provide:
+1. Analysis of mismatch reasons
+2. Specific plan for pattern improvement
 
-Пожалуйста, предоставь:
-1. Анализ причин несоответствия
-2. Конкретный план по улучшению шаблона
+Response format:
+Analysis: (problem analysis)
+Plan: (improvement plan)
 
-Формат ответа:
-Analysis: (анализ проблемы)
-Plan: (план исправления)
-Исходные данные:
-Инструкция: {instruction}
-Ожидаемый результат: {text_after}
+Input data:
+Instruction: {instruction}
+Expected result: {text_after}
 
-Текущая попытка:
+Current attempt:
 Pattern: {pattern}
 Replacement: {replacement}
-Результат: {actual_result}
+Result: {actual_result}
 
-История предыдущих попыток:
+Previous attempts history:
 {history}
 """
 
@@ -252,28 +249,63 @@ class RegexAgent:
         }
     
     async def process_request(self, request: RegexRequest) -> dict:
-        """Публичный метод обработки запроса"""
+        """Обработка запроса на создание regex"""
         try:
-            # Получаем шаблоны от модели
-            pattern, replacement = await self._get_pattern_and_replacement(request)
-            if not pattern or not replacement:
+            total_input_tokens = 0
+            total_output_tokens = 0
+            
+            # 1. Первый вызов - генерация паттерна
+            response = await self.llm.ainvoke(self.prompt.format(
+                instruction=request.instruction,
+                text_before=request.text_before,
+                text_after=request.text_after,
+                history=self.memory.get_relevant_history(request)
+            ))
+            
+            # Суммируем токены с генерации
+            if hasattr(response, 'usage'):
+                total_input_tokens += response.usage.prompt_tokens
+                total_output_tokens += response.usage.completion_tokens
+            
+            # Получаем паттерн и замену
+            if hasattr(response, 'content'):
+                response = response.content
+            response = str(response)
+            
+            pattern_match = re.search(r"Pattern: (.*?)(?:\n|$)", response)
+            replacement_match = re.search(r"Replacement: (.*?)(?:\n|$)", response)
+            
+            if not pattern_match or not replacement_match:
                 return {"error": "Failed to generate pattern"}
             
-            # Тестируем шаблон
+            pattern = pattern_match.group(1).strip()
+            replacement = replacement_match.group(1).strip()
+            
+            # 2. Второй вызов - тестирование
             test_result = await self._test_pattern(pattern, replacement, request.text_before)
+            test_response = await self._evaluate_result(request, pattern, replacement, test_result)
             
-            # Получаем оценку как есть, без обработки
-            analysis = await self._analyze_result(request, pattern, replacement, test_result)
+            # Суммируем токены с тестирования
+            if hasattr(test_response, 'usage'):
+                total_input_tokens += test_response.usage.prompt_tokens
+                total_output_tokens += test_response.usage.completion_tokens
             
-            result = {
-                "pattern": pattern.replace('\\\\', '\\'),  # Убираем двойные слеши
+            # 3. Третий вызов - анализ
+            analysis_response = await self._analyze_result(request, pattern, replacement, test_result)
+            
+            # Суммируем токены с анализа
+            if hasattr(analysis_response, 'usage'):
+                total_input_tokens += analysis_response.usage.prompt_tokens
+                total_output_tokens += analysis_response.usage.completion_tokens
+            
+            return {
+                "pattern": pattern.replace('\\\\', '\\'),
                 "replacement": replacement,
-                "test_result": test_result,
-                "self_evaluation": analysis,
-                "score": 10  # Фиксированная оценка, модель сама разберется
+                "metadata": {
+                    'input_tokens': total_input_tokens,
+                    'output_tokens': total_output_tokens
+                }
             }
-            
-            return result
         except Exception as e:
             self.logger.error(f"Error processing request: {str(e)}")
             raise
@@ -292,8 +324,6 @@ class RegexAgent:
             # Убираем экранированные кавычки и переносы строк
             response = response.replace('\\"', '"').replace('\\n', '\n')
             
-            logger.info(f"Cleaned response: {response}")
-            
             pattern = None
             replacement = None
             
@@ -302,20 +332,12 @@ class RegexAgent:
             replacement_match = re.search(r'Replacement:\s*(.*?)(?=\n|$)', response)
             
             if pattern_match:
-                pattern = pattern_match.group(1).strip()
-                # Убираем двойное экранирование
-                pattern = pattern.replace('\\\\', '\\')
+                pattern = pattern_match.group(1).strip('`')  # Убираем бэктики!
             if replacement_match:
-                replacement = replacement_match.group(1).strip()
-                # Убираем только явные комментарии
-                if ' Note:' in replacement:
-                    replacement = replacement.split(' Note:')[0].strip()
+                replacement = replacement_match.group(1).strip('`')  # Убираем бэктики!
             
             if not pattern or not replacement:
                 raise ValueError(f"Pattern или Replacement не найдены в ответе")
-            
-            logger.info(f"Found pattern: '{pattern}'")
-            logger.info(f"Found replacement: '{replacement}'")
             
             return pattern, replacement
             
